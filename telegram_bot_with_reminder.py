@@ -93,7 +93,7 @@ def load_data(chat_id: str):
     return {
         'rooms': {},
         'prices': DEFAULT_PRICES.copy(),
-        'custom_fees': [],
+        'custom_fees': {},
         'settings': DEFAULT_SETTINGS.copy(),
         'reminders': {}
     }
@@ -851,8 +851,8 @@ async def update_price_value_received(update: Update, context: ContextTypes.DEFA
     try:
         new_price = int(update.message.text)
         
-        if new_price <= 0:
-            await update.message.reply_text("Giá phải > 0!")
+        if new_price < 0:
+            await update.message.reply_text("Giá phải >= 0!")
             return UPDATE_PRICE_VALUE
         
         chat_id = str(update.effective_chat.id)
