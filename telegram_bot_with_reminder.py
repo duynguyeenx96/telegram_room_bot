@@ -7,6 +7,8 @@ Telegram Bot tính tiền thuê phòng trọ - With Auto Monthly Reminder
 import json
 import os
 import io
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import psycopg2
 from psycopg2.extras import Json
 from datetime import datetime, time
@@ -1169,6 +1171,21 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+def run_health_server():
+    port = int(os.getenv('PORT', 8080))
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'OK')
+
+        def log_message(self, format, *args):
+            pass
+
+    HTTPServer(('0.0.0.0', port), Handler).serve_forever()
+
+
 def main():
     """Main function"""
     TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -1179,6 +1196,7 @@ def main():
         print("TELEGRAM_BOT_TOKEN=your_token_here")
         return
 
+    threading.Thread(target=run_health_server, daemon=True).start()
     init_db()
     application = Application.builder().token(TOKEN).post_init(post_init).build()
     
