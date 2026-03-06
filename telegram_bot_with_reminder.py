@@ -6,6 +6,9 @@ Telegram Bot tính tiền thuê phòng trọ - With Auto Monthly Reminder
 
 import json
 import os
+import io
+import psycopg2
+from psycopg2.extras import Json
 from datetime import datetime, time
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -17,8 +20,27 @@ from telegram.ext import (
     filters,
 )
 
-# File lưu dữ liệu
-DATA_FILE = "room_data.json"
+DATABASE_URL = os.getenv('DATABASE_URL')
+_conn = None
+
+
+def get_conn():
+    global _conn
+    if _conn is None or _conn.closed:
+        _conn = psycopg2.connect(DATABASE_URL)
+        _conn.autocommit = True
+    return _conn
+
+
+def init_db():
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bot_data (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                data JSONB NOT NULL
+            )
+        """)
 
 # Các trạng thái trong conversation
 ROOM_NAME, OLD_ELECTRIC, NEW_ELECTRIC, OLD_WATER, NEW_WATER, CONFIRM = range(6)
@@ -47,35 +69,41 @@ DEFAULT_PRICES = {
 
 
 def load_data():
-    """Đọc dữ liệu từ file"""
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            # Đảm bảo có các field mới
+    """Đọc dữ liệu từ PostgreSQL"""
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT data FROM bot_data WHERE id = 1")
+        row = cur.fetchone()
+        if row:
+            data = row[0]
             if 'custom_fees' not in data:
                 data['custom_fees'] = {}
             if 'settings' not in data:
                 data['settings'] = {
-                    'invoice_format': 'full',  # simple, full, detailed
-                    'stats_format': 'simple'    # simple, full, detailed
+                    'invoice_format': 'full',
+                    'stats_format': 'simple'
                 }
             return data
     return {
         "rooms": {},
         "prices": DEFAULT_PRICES.copy(),
-        "custom_fees": {},  # {fee_name: {"price": 50000, "multiplier": 1}}
+        "custom_fees": {},
         "settings": {
             "invoice_format": "full",
             "stats_format": "simple"
         },
-        "reminders": {}  # {chat_id: {"day": 1, "time": "09:00", "rooms": ["Phòng 101"]}}
+        "reminders": {}
     }
 
 
 def save_data(data):
-    """Lưu dữ liệu vào file"""
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """Lưu dữ liệu vào PostgreSQL"""
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO bot_data (id, data) VALUES (1, %s)
+            ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+        """, (Json(data),))
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1124,12 +1152,14 @@ async def settings_handler_func(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xuất dữ liệu"""
-    with open(DATA_FILE, 'rb') as f:
-        await update.message.reply_document(
-            document=f,
-            filename=f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            caption="📦 Backup dữ liệu"
-        )
+    data = load_data()
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    f = io.BytesIO(content.encode('utf-8'))
+    await update.message.reply_document(
+        document=f,
+        filename=f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+        caption="📦 Backup dữ liệu"
+    )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1148,7 +1178,8 @@ def main():
         print("Tạo file .env với nội dung:")
         print("TELEGRAM_BOT_TOKEN=your_token_here")
         return
-    
+
+    init_db()
     application = Application.builder().token(TOKEN).post_init(post_init).build()
     
     # Conversation handlers
