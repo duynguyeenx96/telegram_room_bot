@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram Room Rental Bot with Auto Reminder
+After=network.target
+
+[Service]
+Type=simple
+User=your_username
+WorkingDirectory=/home/your_username/telegram-bot
+Environment="PATH=/home/your_username/telegram-bot/venv/bin"
+ExecStart=/home/your_username/telegram-bot/venv/bin/python telegram_bot_with_reminder.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

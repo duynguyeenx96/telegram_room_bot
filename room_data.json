@@ -1,0 +1,65 @@
+{
+  "rooms": {
+    "Phòng Duy 79/8G QL13": {
+      "history": [
+        {
+          "date": "2026-02-03 15:33:54",
+          "month": "02/2026",
+          "old_electric": 3845.0,
+          "new_electric": 3942.0,
+          "electric_used": 97.0,
+          "electric_cost": 339500.0,
+          "old_water": 492.0,
+          "new_water": 495.0,
+          "water_used": 3.0,
+          "water_cost": 66000.0,
+          "total": 2485500.0,
+          "prices_snapshot": {
+            "room_price": 2000000,
+            "electric_price": 3500,
+            "water_price": 22000,
+            "internet": 80000,
+            "parking": 0
+          }
+        },
+        {
+          "date": "2026-03-03 22:21:00",
+          "month": "03/2026",
+          "old_electric": 3942.0,
+          "new_electric": 3999.0,
+          "electric_used": 57.0,
+          "electric_cost": 199500.0,
+          "old_water": 495.0,
+          "new_water": 497.0,
+          "water_used": 2.0,
+          "water_cost": 44000.0,
+          "total": 2323500.0,
+          "prices_snapshot": {
+            "room_price": 2000000,
+            "electric_price": 3500,
+            "water_price": 22000,
+            "internet": 80000,
+            "parking": 0
+          }
+        }
+      ]
+    }
+  },
+  "prices": {
+    "room_price": 2000000,
+    "electric_price": 3500,
+    "water_price": 22000,
+    "internet": 80000,
+    "parking": 0
+  },
+  "reminders": {
+    "5515787721": {
+      "day": 1,
+      "time": "09:00",
+      "rooms": [
+        "Phòng Duy 79/8G QL13"
+      ],
+      "enabled": true
+    }
+  }
+}
