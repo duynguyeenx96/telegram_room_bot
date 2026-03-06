@@ -7,6 +7,7 @@ Telegram Bot tính tiền thuê phòng trọ - With Auto Monthly Reminder
 import json
 import os
 import io
+import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import psycopg2
@@ -1196,6 +1197,7 @@ def main():
         print("TELEGRAM_BOT_TOKEN=your_token_here")
         return
 
+    asyncio.set_event_loop(asyncio.new_event_loop())
     threading.Thread(target=run_health_server, daemon=True).start()
     init_db()
     application = Application.builder().token(TOKEN).post_init(post_init).build()
