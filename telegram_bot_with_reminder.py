@@ -89,7 +89,10 @@ def load_data(chat_id: str):
         cur.execute("SELECT data FROM bot_data WHERE chat_id = %s", (chat_id,))
         row = cur.fetchone()
     if row:
-        return row[0]
+        d = row[0]
+        if isinstance(d.get('custom_fees'), list):
+            d['custom_fees'] = {}
+        return d
     return {
         'rooms': {},
         'prices': DEFAULT_PRICES.copy(),
