@@ -39,8 +39,15 @@ def init_db():
     conn = get_conn()
     with conn.cursor() as cur:
         cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'bot_data' AND column_name = 'id'
+              AND data_type = 'integer'
+        """)
+        if cur.fetchone():
+            cur.execute("DROP TABLE bot_data")
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS bot_data (
-                id INTEGER PRIMARY KEY DEFAULT 1,
+                chat_id TEXT PRIMARY KEY,
                 data JSONB NOT NULL
             )
         """)
@@ -70,43 +77,48 @@ DEFAULT_PRICES = {
     "parking": int(os.getenv("PARKING_PRICE", 50000)),
 }
 
+DEFAULT_SETTINGS = {
+    "invoice_format": "full",
+    "stats_format": "simple",
+}
 
-def load_data():
-    """Đọc dữ liệu từ PostgreSQL"""
+
+def load_data(chat_id: str):
     conn = get_conn()
     with conn.cursor() as cur:
-        cur.execute("SELECT data FROM bot_data WHERE id = 1")
+        cur.execute("SELECT data FROM bot_data WHERE chat_id = %s", (chat_id,))
         row = cur.fetchone()
-        if row:
-            data = row[0]
-            if 'custom_fees' not in data:
-                data['custom_fees'] = {}
-            if 'settings' not in data:
-                data['settings'] = {
-                    'invoice_format': 'full',
-                    'stats_format': 'simple'
-                }
-            return data
+    if row:
+        return row[0]
     return {
-        "rooms": {},
-        "prices": DEFAULT_PRICES.copy(),
-        "custom_fees": {},
-        "settings": {
-            "invoice_format": "full",
-            "stats_format": "simple"
-        },
-        "reminders": {}
+        'rooms': {},
+        'prices': DEFAULT_PRICES.copy(),
+        'custom_fees': [],
+        'settings': DEFAULT_SETTINGS.copy(),
+        'reminders': {}
     }
 
 
-def save_data(data):
-    """Lưu dữ liệu vào PostgreSQL"""
+def save_data(chat_id: str, data):
     conn = get_conn()
     with conn.cursor() as cur:
-        cur.execute("""
-            INSERT INTO bot_data (id, data) VALUES (1, %s)
-            ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
-        """, (Json(data),))
+        cur.execute(
+            """INSERT INTO bot_data (chat_id, data) VALUES (%s, %s)
+               ON CONFLICT (chat_id) DO UPDATE SET data = EXCLUDED.data""",
+            (chat_id, Json(data))
+        )
+
+
+def load_all_reminders():
+    conn = get_conn()
+    with conn.cursor() as cur:
+        cur.execute("SELECT chat_id, data FROM bot_data")
+        rows = cur.fetchall()
+    result = {}
+    for chat_id, data in rows:
+        for cid, reminder in data.get('reminders', {}).items():
+            result[cid] = reminder
+    return result
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,7 +180,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hiển thị bảng giá"""
-    data = load_data()
+    chat_id = str(update.effective_chat.id)
+    data = load_data(chat_id)
     prices = data.get("prices", DEFAULT_PRICES)
     custom_fees = data.get("custom_fees", {})
 
@@ -272,20 +285,20 @@ async def reminder_time_received(update: Update, context: ContextTypes.DEFAULT_T
             raise ValueError
         
         # Lưu vào database
-        data = load_data()
         chat_id = str(update.effective_chat.id)
-        
+        data = load_data(chat_id)
+
         # Lấy danh sách phòng đã có
         rooms = list(data['rooms'].keys()) if data['rooms'] else []
-        
+
         data['reminders'][chat_id] = {
             'day': context.user_data['reminder_day'],
             'time': text,
             'rooms': rooms,
             'enabled': True
         }
-        
-        save_data(data)
+
+        save_data(chat_id, data)
         
         # Schedule job
         await schedule_reminder(context.application, chat_id, data['reminders'][chat_id])
@@ -316,8 +329,8 @@ async def reminder_time_received(update: Update, context: ContextTypes.DEFAULT_T
 
 async def view_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xem lịch nhắc nhở hiện tại"""
-    data = load_data()
     chat_id = str(update.effective_chat.id)
+    data = load_data(chat_id)
     
     if chat_id not in data.get('reminders', {}):
         await update.message.reply_text(
@@ -344,15 +357,15 @@ async def view_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def disable_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tắt nhắc nhở"""
-    data = load_data()
     chat_id = str(update.effective_chat.id)
-    
+    data = load_data(chat_id)
+
     if chat_id not in data.get('reminders', {}):
         await update.message.reply_text("Bạn chưa có nhắc nhở nào để tắt!")
         return
-    
+
     data['reminders'][chat_id]['enabled'] = False
-    save_data(data)
+    save_data(chat_id, data)
     
     # Remove scheduled job
     job_name = f"reminder_{chat_id}"
@@ -430,16 +443,11 @@ async def schedule_reminder(application, chat_id, reminder_data):
     print(f"✅ Đã lên lịch reminder cho chat {chat_id} vào {reminder_data['day']} hàng tháng lúc {reminder_data['time']}")
 
 
-async def post_init(application: Application):
-    """Khởi tạo các reminder khi bot start"""
-    print("🔄 Đang load các reminder đã lưu...")
-    data = load_data()
-    
-    for chat_id, reminder_data in data.get('reminders', {}).items():
+async def post_init(application):
+    data_map = load_all_reminders()
+    for chat_id, reminder_data in data_map.items():
         if reminder_data.get('enabled', True):
             await schedule_reminder(application, chat_id, reminder_data)
-    
-    print("✅ Đã load xong các reminder!")
 
 
 # === CÁC HÀM TÍNH TIỀN (giữ nguyên như trước) ===
@@ -456,9 +464,10 @@ async def calculate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def room_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Nhận tên phòng"""
+    chat_id = str(update.effective_chat.id)
     context.user_data['room_name'] = update.message.text
-    data = load_data()
-    
+    data = load_data(chat_id)
+
     room_data = data['rooms'].get(update.message.text, {})
     suggestion = ""
     
@@ -493,8 +502,9 @@ async def new_electric_received(update: Update, context: ContextTypes.DEFAULT_TY
             return NEW_ELECTRIC
         
         context.user_data['new_electric'] = new_val
-        
-        data = load_data()
+
+        chat_id = str(update.effective_chat.id)
+        data = load_data(chat_id)
         room_data = data['rooms'].get(context.user_data['room_name'], {})
         suggestion = ""
         
@@ -532,8 +542,9 @@ async def new_water_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return NEW_WATER
         
         context.user_data['new_water'] = new_val
-        
-        data = load_data()
+
+        chat_id = str(update.effective_chat.id)
+        data = load_data(chat_id)
         prices = data['prices']
         
         electric_used = context.user_data['new_electric'] - context.user_data['old_electric']
@@ -698,14 +709,14 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = update.message.text.lower()
     
     if response in ['có', 'co', 'yes', 'y']:
-        data = load_data()
+        chat_id = str(update.effective_chat.id)
+        data = load_data(chat_id)
         room_name = context.user_data['room_name']
-        
+
         if room_name not in data['rooms']:
             data['rooms'][room_name] = {'history': []}
-            
+
             # Cập nhật danh sách phòng trong reminder
-            chat_id = str(update.effective_chat.id)
             if chat_id in data.get('reminders', {}):
                 if room_name not in data['reminders'][chat_id].get('rooms', []):
                     data['reminders'][chat_id].setdefault('rooms', []).append(room_name)
@@ -726,8 +737,8 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         
         data['rooms'][room_name]['history'].append(record)
-        save_data(data)
-        
+        save_data(chat_id, data)
+
         await update.message.reply_text(
             "✅ <b>Đã lưu thành công!</b>\n\n"
             "• /lichsu - Xem lịch sử\n"
@@ -748,7 +759,8 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xem lịch sử thanh toán"""
-    data = load_data()
+    chat_id = str(update.effective_chat.id)
+    data = load_data(chat_id)
 
     if not data['rooms']:
         await update.message.reply_text("📭 Chưa có dữ liệu!")
@@ -843,11 +855,12 @@ async def update_price_value_received(update: Update, context: ContextTypes.DEFA
             await update.message.reply_text("Giá phải > 0!")
             return UPDATE_PRICE_VALUE
         
-        data = load_data()
+        chat_id = str(update.effective_chat.id)
+        data = load_data(chat_id)
         old_price = data['prices'][context.user_data['price_type']]
         data['prices'][context.user_data['price_type']] = new_price
-        save_data(data)
-        
+        save_data(chat_id, data)
+
         await update.message.reply_text(
             f"✅ Đã cập nhật {context.user_data['price_label']}\n"
             f"Cũ: {old_price:,}đ → Mới: {new_price:,}đ"
@@ -863,7 +876,8 @@ async def update_price_value_received(update: Update, context: ContextTypes.DEFA
 
 async def adjust_number_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bắt đầu sửa số điện/nước cũ"""
-    data = load_data()
+    chat_id = str(update.effective_chat.id)
+    data = load_data(chat_id)
 
     if not data['rooms']:
         await update.message.reply_text("❌ Chưa có phòng nào trong hệ thống!")
@@ -890,7 +904,8 @@ async def adjust_room_received(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Đã hủy!", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
-    data = load_data()
+    chat_id = str(update.effective_chat.id)
+    data = load_data(chat_id)
     if room not in data['rooms'] or not data['rooms'][room].get('history'):
         await update.message.reply_text("❌ Phòng không tồn tại hoặc chưa có lịch sử!", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
@@ -951,7 +966,8 @@ async def adjust_value_received(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         new_value = float(update.message.text)
 
-        data = load_data()
+        chat_id = str(update.effective_chat.id)
+        data = load_data(chat_id)
         room = context.user_data['adjust_room']
         field = context.user_data['adjust_type']
 
@@ -973,7 +989,7 @@ async def adjust_value_received(update: Update, context: ContextTypes.DEFAULT_TY
         last['total'] = (prices['room_price'] + last['electric_cost'] +
                         last['water_cost'] + prices['internet'] + prices['parking'])
 
-        save_data(data)
+        save_data(chat_id, data)
 
         await update.message.reply_text(
             f"✅ <b>Đã cập nhật!</b>\n\n"
@@ -1033,7 +1049,8 @@ async def add_fee_multiplier_received(update: Update, context: ContextTypes.DEFA
     try:
         multiplier = float(update.message.text)
 
-        data = load_data()
+        chat_id = str(update.effective_chat.id)
+        data = load_data(chat_id)
         fee_name = context.user_data['fee_name']
 
         data['custom_fees'][fee_name] = {
@@ -1041,7 +1058,7 @@ async def add_fee_multiplier_received(update: Update, context: ContextTypes.DEFA
             'multiplier': multiplier
         }
 
-        save_data(data)
+        save_data(chat_id, data)
 
         await update.message.reply_text(
             f"✅ <b>Đã thêm phí mới!</b>\n\n"
@@ -1061,7 +1078,8 @@ async def add_fee_multiplier_received(update: Update, context: ContextTypes.DEFA
 
 async def settings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cài đặt hiển thị"""
-    data = load_data()
+    chat_id = str(update.effective_chat.id)
+    data = load_data(chat_id)
     settings = data.get('settings', {})
 
     keyboard = [
@@ -1135,12 +1153,13 @@ async def settings_handler_func(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Bước 3: Nếu chọn giá trị (simple/full/detailed), lưu và quay lại
     elif choice in ['simple', 'full', 'detailed']:
-        data = load_data()
+        chat_id = str(update.effective_chat.id)
+        data = load_data(chat_id)
         key = context.user_data.get('setting_key')
 
         if key:
             data['settings'][key] = choice
-            save_data(data)
+            save_data(chat_id, data)
             await update.message.reply_text(f"✅ Đã cập nhật {key} = {choice}")
 
         context.user_data.clear()
@@ -1155,7 +1174,8 @@ async def settings_handler_func(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xuất dữ liệu"""
-    data = load_data()
+    chat_id = str(update.effective_chat.id)
+    data = load_data(chat_id)
     content = json.dumps(data, ensure_ascii=False, indent=2)
     f = io.BytesIO(content.encode('utf-8'))
     await update.message.reply_document(
